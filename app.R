@@ -123,19 +123,19 @@ ui <- fluidPage(theme = shinytheme("sandstone"),
                         br(),
                         fluidRow(column(12, textOutput("clickTextNat"))),
                         br(),
-                        selectInput("assetCat", "Choose asset size category", 
+                        selectInput("assetCat", "Choose OCC-regulated bank asset size category", 
                                     choices=c("All", "Less than $1bn", "$1bn - 2.49bn","$2.5bn - 9.9bn",
                                                "$10bn - 99.9bn","$100bn and above")),
                          fluidRow(column(12,leafletOutput("mapNatBank"))),
                          br(),
-                         fluidRow(column(6, plotOutput("bankLoanRangePlot")))
-                                  #,
-                        #         column(8, offset=2, plotOutput("bankJobsPlot"))),
-                        # br(),
-                        # fluidRow(column(10, offset=1, plotOutput("bankIndustriesPlot"))),
-                        # br(),
-                        # fluidRow(column(12, textOutput("warningText"))),
-                        # fluidRow(column(12, textOutput("dataSource")))
+                         fluidRow(column(4, plotOutput("bankLoanRangePlot")),
+                                  column(4, plotOutput("bankJobsPlot")),
+                                  column(4, plotOutput("bankIndustriesPlot"))),
+                          br(),
+                          fluidRow(column(10, offset=1, plotOutput("bankLenderRangeplot"))),
+                          br(),
+                          fluidRow(column(12, textOutput("warningTextNat"))),
+                          fluidRow(column(12, textOutput("dataSourceNat")))
                 
                 ),#end OCC regulated banks tab
 
@@ -421,26 +421,137 @@ server <- function(input, output, session) {
                                 "$5m-10m"))+
       scale_y_continuous(labels=scales::comma, limits=c(0,40000))+
       geom_text(stat='count', aes(label=comma(..count..)), vjust=-.25)+
-      ggtitle(paste0("Number of Loans in Each Loan Range for ",unique(my_data_nat$asset_cat), 
-                     " Asset Category in ", unique(my_data_nat$State)))
+      ggtitle(paste0("Number of Loans by Loan Range in ",unique(my_data_nat$State)))
   })
   
+   #Plot of number of jobs saved at each loan range level for selected state
+  output$bankJobsPlot <- renderPlot({
+    #no selections
+    if ((input$assetCat=="" | input$assetCat=="All") & (nrow(ggplot_data_nat())==0)){ 
+      my_data_nat <- SBA_state_plot_nat_all2
+    } #asset selection & no state selected
+    else if ((input$assetCat!="" | input$assetCat!="All") & (nrow(ggplot_data_nat())==0)){ 
+      my_data_nat <- SBA_state_plot_nat_all1
+      #no asset selection & state selected
+    } else if ((input$assetCat=="" | input$assetCat=="All") & (nrow(ggplot_data_nat())!=0)){ 
+      my_data_nat <- ggplot_data_nat1()
+      #asset and state selected
+    } else if ((input$assetCat!="" | input$assetCat!="All") & (nrow(ggplot_data_nat())!=0)){
+      my_data_nat <- ggplot_data_nat() 
+    }
+    
+    my_data_nat%>%
+      filter(asset_cat==!!input$assetCat)%>%
+      ggplot(aes(x=LoanRange1, y=JobsRetained))+
+        geom_jitter(color="cadetblue3")+
+        theme_bw()+
+        theme(axis.text.x=element_text(color = "black", size=10, angle=30, vjust=1, hjust=1))+
+        xlab("Loan Range")+
+        ylab("Number of Jobs Retained")+
+        scale_x_discrete(breaks=c("e $150,000-350,000", 
+                                  "d $350,000-1 million", 
+                                  "c $1-2 million", 
+                                  "b $2-5 million",
+                                  "a $5-10 million"),
+                         labels=c("$150k-350k", 
+                                  "$350k-1m", 
+                                  "$1m-2m", 
+                                  "$2m-5m",
+                                  "$5m-10m"))+
+        scale_y_continuous(labels=scales::comma, limits=c(0,600))+
+      ggtitle(paste0("Number of Jobs Retained by Loan Range in ",unique(my_data_nat$State)))
+    })
   
-  # output$bankJobsPlot <- renderPlot({
-  # 
-  # })
-  # 
-  # output$bankIndustriesPlot <- renderPlot({
-  # 
-  # })
-  # 
-  # output$bankLenderRangeplot <- renderPlot({
-  # 
-  # })
+
+  output$bankIndustriesPlot <- renderPlot({
+    #no selections
+    if ((input$assetCat=="" | input$assetCat=="All") & (nrow(ggplot_data_nat())==0)){ 
+      my_data_nat <- SBA_state_plot_nat_all2
+    } #asset selection & no state selected
+    else if ((input$assetCat!="" | input$assetCat!="All") & (nrow(ggplot_data_nat())==0)){ 
+      my_data_nat <- SBA_state_plot_nat_all1
+      #no asset selection & state selected
+    } else if ((input$assetCat=="" | input$assetCat=="All") & (nrow(ggplot_data_nat())!=0)){ 
+      my_data_nat <- ggplot_data_nat1()
+      #asset and state selected
+    } else if ((input$assetCat!="" | input$assetCat!="All") & (nrow(ggplot_data_nat())!=0)){
+      my_data_nat <- ggplot_data_nat() 
+    }
+    
+    my_data_nat%>%
+      filter(asset_cat==!!input$assetCat)%>%
+      select(State, IndustryName, JobsRetained)%>%
+      group_by(State, IndustryName)%>%
+      summarise(statejobsInd = sum(JobsRetained, na.rm=TRUE))%>%
+      group_by(State)%>%top_n(n=10)%>%
+      ggplot(aes(reorder(statejobsInd, x=IndustryName), y=statejobsInd))+
+      geom_col(color="gray48", fill="cadetblue3")+
+      theme_bw()+
+      theme(axis.text.x=element_text(color = "black", size=10, angle=30,vjust=1, hjust=1))+
+      xlab("Industries")+
+      ylab("Number of Jobs Retained")+
+      scale_y_continuous(labels=scales::comma, limits=c(0,600000))+
+      geom_text(aes(label=comma(statejobsInd)), vjust=-.25, angle=45, hjust=.25)+
+      ggtitle(paste0("Number of Jobs Retained by Loan Range Ten Industries", 
+                     "\n with Largest No. of Jobs Retained in: ",unique(my_data_nat$State)))
+  })
   
+
+  output$bankLenderRangeplot <- renderPlot({
+    if ((input$assetCat=="" | input$assetCat=="All") & (nrow(ggplot_data_nat())==0)){ 
+      my_data_nat <- SBA_state_plot_nat_all2
+    } #asset selection & no state selected
+    else if ((input$assetCat!="" | input$assetCat!="All") & (nrow(ggplot_data_nat())==0)){ 
+      my_data_nat <- SBA_state_plot_nat_all1
+      #no asset selection & state selected
+    } else if ((input$assetCat=="" | input$assetCat=="All") & (nrow(ggplot_data_nat())!=0)){ 
+      my_data_nat <- ggplot_data_nat1()
+      #asset and state selected
+    } else if ((input$assetCat!="" | input$assetCat!="All") & (nrow(ggplot_data_nat())!=0)){
+      my_data_nat <- ggplot_data_nat() 
+    }
+    
+    #Prepare data for use
+    my_data_nat%>%
+      filter(asset_cat==!!input$assetCat)%>%
+      inner_join(top_banks, by=c("State", "Lender"))%>%
+      select(State, Lender, LoanRange1)%>%  
+      group_by(Lender)%>%
+      mutate(tot_range_lender=n())%>%
+      ungroup()%>%
+      group_by(Lender, LoanRange1)%>%
+      ggplot(aes(x=reorder(Lender, -tot_range_lender)))+
+      geom_bar(aes(fill=LoanRange1))+
+      theme_bw()+
+      theme(axis.text.x=element_text(color = "black", size=10, angle=60, vjust=1, hjust=1))+
+      xlab("Lenders and Loan Ranges")+
+      ylab("Number of Loans by Loan Range")+
+      scale_y_continuous(labels=scales::comma, limits=c(0,8000))+
+      geom_text(stat='count', aes(label=comma(..count..)), vjust=-.25)+
+      ggtitle(paste0("Number of Loans - Ten Largest Lenders in ", unique(my_data_nat$State)))+
+      scale_fill_manual(values=c("cadetblue2", 
+                                 "cadetblue1",
+                                 "cadetblue3",
+                                 "cadetblue4",
+                                 "gray48"),
+                        breaks=c("e $150,000-350,000",
+                                 "d $350,000-1 million",
+                                 "c $1-2 million",
+                                 "b $2-5 million",
+                                 "a $5-10 million"),
+                        labels=c("$150k-350k",
+                                 "$350k-1m",
+                                 "$1m-2m",
+                                 "$2m-5m",
+                                 "$5m-10m"),
+                        name="Loan Ranges")
+
+  })
+
   #warning text
   output$warningText <- renderText({
-    "Note: Of the 661,218 loans resported by SBA, 48,922 loans reported 0 jobs retained; an addition 40,506 observations did not report job-retention data. Additionally, some companies included in this database
+    "Note: Of the 661,218 loans reported by SBA, 48,922 loans reported 0 jobs retained; an 
+    additional 40,506 observations did not report job-retention data. Additionally, some companies included in this database
     have indicated the information reported by SBA is inaccurate or incomplete."
   })
   
@@ -450,6 +561,17 @@ server <- function(input, output, session) {
      https://home.treasury.gov/policy-issues/cares-act/assistance-for-small-businesses/sba-paycheck-protection-program-loan-level-data."
   })
   
+  #warning text nat
+  output$warningTextNat <- renderText({
+    "Note: Of the 243,512 loans made by national banks that could be conclusively matched and reported by SBA, 14,252 
+    loans reported 0 jobs retained; an addition 24,632 observations did not report job-retention data."
+  })
+  
+  #data source nat
+  output$dataSourceNat <- renderText({
+    "The data used in these plots was downloaded from
+     https://home.treasury.gov/policy-issues/cares-act/assistance-for-small-businesses/sba-paycheck-protection-program-loan-level-data."
+  })
 
   # # output$SBA_df <- renderDataTable({
   # #   SBA_orig
