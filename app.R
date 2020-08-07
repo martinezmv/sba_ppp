@@ -1,314 +1,472 @@
 #' Roxygen style comments
 #' This structure supports later package documentation
+
+
 library(shiny)
 library(shinythemes)
 library(tidyverse)
 library(leaflet)
+library(viridis)
 library(shinydashboard)
 library(ggplot2)
 library(tigris)
-options(shiny.maxRequestSize = 30*1024^2)
+library(rsconnect)
+library(scales)
 
+options(tigris_use_cache = TRUE)
 
-SBA <- get(load(file = "../data/SBA.Rdata"))
-SBA_orig<-SBA #create copy of SBA dataset with all fields for use in table tab
+#bring in SBA data
+SBA <- read_csv("./data/150K_slim.csv")
+SBA%>%mutate(Lender=str_replace(Lender, "\\bNational Association\\b", "NA"))->SBA
 
-#elmininate all fields we don't need for visualization and statistics tabs to
-#make loading faster
-SBA%>%select(-BusinessName, -Address, -BusinessType, -RaceEthnicity, -Gender, 
-             -Veteran, -DateApproved, -NonProfit)->SBA
-naics <- read_csv("../data/naics.csv") #bring in industry data
-#bring in census population data estimates for 2019
+#bring in NAICS data
+naics <- read_csv("./data/naics.csv") 
+
+nat_banks_list <- read_csv("./data/nat_banks_final.csv")
+nat_banks_list%>%select(-findrsLender, -cert)->nat_banks
+nat_banks%>%inner_join(SBA, by="Lender")->nat_banks
+
+#bring in census population data estimates by state for 2019
 #source: https://www.census.gov/data/tables/time-series/demo/popest/2010s-state-total.html#par_textimage
-pop <- read_csv("../data/pop_census_2019.csv")
+pop <- read_csv("./data/pop_by_state.csv")
+
+#import census population data estimates by county for 2019
+pop_cty <- read_csv("./data/pop_by_county.csv")
+
 # obtain population/10000
 pop%>%  mutate(pop_10000=pop_est/10000)->pop
-
-state <- unique(SBA$State)
 
 #replace naics code with two-digit industry categories
 SBA%>%mutate(Sector=as.numeric(str_extract(NAICSCode, "\\d\\d")))%>%
   inner_join(naics, by="Sector")->SBA
-# Subsample df for statistical analysis
-#SBA_samp <- SBA %>% sample_frac(0.1) 
 
-#Find Top Lender
-lend_vec <- vector(mode = "character", length = length(state))
-n_vec <- vector(mode = "double", length = length(state))
-for (i in seq_along(n_vec))
-{
-  SBA %>%
-    filter(State == state[[i]]) %>%  ##CHANGED
-    group_by(Lender) %>%
-    summarize(n = n()) %>%
-    arrange(desc(n)) %>%
-    slice(1) -> temp
-  
-  lend_vec[[i]] <- temp[[1]]
-  n_vec[[i]] <- temp[[2]]
-  
-}
+#prepare for plot of top lenders in each state
+SBA %>%group_by(State, Lender) %>%
+  summarize(n = n()) %>%
+  arrange(desc(n)) %>%
+  group_by(State)%>%
+  top_n(n=10)->top_banks
 
-top_lend <- data.frame(state, lend_vec, n_vec) ##CHANGED
-top_lend %>%
-  filter(state != "XX") -> top_lend
 
-#Find Total Num of Loans given in each range by state
-loan_range_summary <- function(state){
-  SBA %>%
-    filter(State == state) %>%
-    group_by(LoanRange) %>%
-    mutate(n = n()) %>%
-    arrange(desc(n)) %>%
-    select(State,LoanRange, n) %>%
-    distinct()
-}
-
-loan_range_df <- map_df(unique(SBA$State), loan_range_summary)
-
-#Combine and clean data for mapping
-inner_join(top_lend,loan_range_df,by = c("state"= "State")) %>%
-  pivot_wider(names_from = LoanRange, values_from = n) %>%
-  rename("Loan_150K_350K" = `e $150,000-350,000`,
-         "Loan_350K_1_mil"= `d $350,000-1 million`,
-         "Loan_1_2_mil" = `c $1-2 million`,
-         'Loan_2_5_mil' = `b $2-5 million`,
-         "Loan_5_10_mil" = `a $5-10 million`) -> geocode
 #prepare for use in state plot
 SBA%>%mutate(LoanRange1=factor(LoanRange, levels=c("e $150,000-350,000", 
                                                    "d $350,000-1 million", 
                                                    "c $1-2 million", 
                                                    "b $2-5 million",
-                                                   "a $5-10 million")))->SBA_state_plot #look into relabeling
+                                                   "a $5-10 million")))->SBA_state_plot 
+
+#Prepare map plot data for nat banks
+#asset cat and state selected
+nat_banks_list%>%inner_join(SBA_state_plot, by="Lender")->SBA_state_plot_nat 
+#state selected and no asset selected
+SBA_state_plot_nat%>%mutate(asset_cat="All")->SBA_state_plot_nat_all 
+#no state selected and asset selected
+SBA_state_plot_nat%>%mutate(State="National")->SBA_state_plot_nat_all1
+#when no asset cat or state select
+SBA_state_plot_nat_all%>%mutate(State="National")->SBA_state_plot_nat_all2 
+
 #Prepare count of loans by state
 SBA %>%
-group_by(State)%>%
+  group_by(State)%>%
   summarize(total = n())%>%
   inner_join(pop, by="State")%>%
   mutate(total=(total/pop_10000))%>% #obtain number of loans per 10,000
   rename(state=State)->loans_by_state
 
-top_lend%>%inner_join(loans_by_state, by="state")->loans_by_state1
-# Now we use the Tigris function geo_join to bring together 
-# the states shapefile and the sb_states dataframe -- STUSPS and state 
-# are the two columns they'll be joined by
-states <- states(cb=T)
-states_merged_SBA <- geo_join(states, loans_by_state1, "STUSPS", "state", how="inner")
-# Creating a color palette based on the number range in the total column
-pal <- colorNumeric("Oranges", domain=loans_by_state$total)
+#Prepare count of loans by state for national banks
+nat_banks %>%
+  group_by(State)%>%
+  summarize(total = n())%>%
+  inner_join(pop, by="State")%>%
+  mutate(total=(total/pop_10000))%>% #obtain number of loans per 10,000
+  rename(state=State)->loans_by_state_nat
 
-source("dashboard.R",local = TRUE)
+# Use the states shapefile and the loans_by_states dataframe 
+# STUSPS and state are the two columns they'll be joined by
+states <- states(cb=T)
+states_merged_SBA <- geo_join(states, loans_by_state, "STUSPS", "state", how="inner")
+states_merged_SBA_nat <- geo_join(states, loans_by_state_nat, "STUSPS", "state", how="inner")
+
+# Create a color palette based on the number range in the total column
+pal <- colorNumeric("Oranges", domain=loans_by_state$total)
+palnat <- colorNumeric("Oranges", domain=loans_by_state_nat$total)
+
 ui <- fluidPage(theme = shinytheme("sandstone"),
-                titlePanel("2020 SBA Loan Explorer"),
+                titlePanel("SBA Paycheck Protection Program Loan Level Data - Loans $150K and Above"),
                 tabsetPanel(
-                  tabPanel("Visualization",
+                  tabPanel("All Loans",
+                           (tags$style(type="text/css",
+                                        ".shiny-output-error { visibility: hidden; }",
+                                        ".shiny-output-error:before { visibility: hidden; }")),
+                           
+                           br(),
+                           fluidRow(column(12, textOutput("clickText"))),
+                           br(),
                            fluidRow(column(12,
                                            leafletOutput("map"))),
                            br(),
                            fluidRow(column(4, plotOutput("stateLoanRangePlot")),
                                     column(4, plotOutput("stateJobsPlot")),
                                     column(4, plotOutput("stateIndustriesPlot"))),
-                  ),#end Visualization tab
-                  tabPanel("Statistical Modeling",
-                           dashboardPage(
-                             skin = "black",
-                             dashboardHeader(title = "SBA: Job Retention"),
-                             sidebar,
-                             mainpage
-                           )
-                  ),#end Statistical Modeling tab
-                  
-                  tabPanel("Data",
-                           dataTableOutput("SBA_df")
-                  )#end Data tab
-                )#end titlePanel
-)#end ui
+                           
+                           br(),
+                           fluidRow(column(10, offset=1, plotOutput("stateLenderRangeplot"))),
+                           
+                           
+                           
+                           br(),
+                           fluidRow(column(12, textOutput("warningText"))),
+                           fluidRow(column(12, textOutput("dataSource")))
+                           ),#end All Loans tab
+
+                tabPanel("OCC-Regulated Banks",
+                        br(),
+                        fluidRow(column(12, textOutput("clickTextNat"))),
+                        br(),
+                        selectInput("assetCat", "Choose asset size category", 
+                                    choices=c("All", "Less than $1bn", "$1bn - 2.49bn","$2.5bn - 9.9bn",
+                                               "$10bn - 99.9bn","$100bn and above")),
+                         fluidRow(column(12,leafletOutput("mapNatBank"))),
+                         br(),
+                         fluidRow(column(6, plotOutput("bankLoanRangePlot")))
+                                  #,
+                        #         column(8, offset=2, plotOutput("bankJobsPlot"))),
+                        # br(),
+                        # fluidRow(column(10, offset=1, plotOutput("bankIndustriesPlot"))),
+                        # br(),
+                        # fluidRow(column(12, textOutput("warningText"))),
+                        # fluidRow(column(12, textOutput("dataSource")))
+                
+                ),#end OCC regulated banks tab
+
+                tabPanel("Jobs Retained",
+                         br(),
+                         fluidRow(column(8, offset=2, plotOutput("corrJobsAll"))),
+                         br(),
+                         fluidRow(column(8, offset=2, plotOutput("corrJobsNat")))                      
+                         )#End jobs Retained panel
+                
+            )#end tabsetPanel
+      )#end ui
+
 server <- function(input, output, session) {
+  
+  #click text
+  output$clickText <- renderText({
+    "Please click on a state to view plots. Zoom out to view Alaska and Hawaii."
+  })
+  
   output$map <- renderLeaflet({
     leaflet() %>%
-      addProviderTiles("Wikimedia") %>%
-      setView(lng = -93.85, lat = 37.45,zoom = 4) %>% #Open map so it centers on US
+      addTiles("CartoDB.Positron") %>%
+      setView(lng = -93.85, lat = 37.45, zoom = 4)%>% #Open map so it centers on US
       addPolygons(data = states_merged_SBA, 
                   fillColor = ~pal(states_merged_SBA$total), 
                   fillOpacity = 0.7, 
                   weight = 0.2, 
                   smoothFactor = 0.2, 
-                  popup= ~paste("State:",STUSPS,"<br>",
-                               "Top Lender:",lend_vec,"<br>",
-                               "Num of Loans from Top Lender:",n_vec,"<br>"),
-                  layerId = ~STUSPS,
-      )%>%
+                       popup=~NAME,
+                       layerId = ~state
+                  )%>%
       addLegend(pal = pal, 
                 values = states_merged_SBA$total, 
                 position = "bottomright", 
-title = "No. of Loans<br />per 10,000<br/>residents")
-})
-
-# generate data in reactive
-ggplot_data <- reactive({
-  state_click <- input$map_shape_click
-  SBA_state_plot[SBA_state_plot$State %in% state_click,]
-})
-
-#Plot of number of loans at each loan range level for a selected state
-output$stateLoanRangePlot <- renderPlot({
+                title = "No. of Loans<br />per 10,000<br/>residents")
+  })
   
-  if(nrow(ggplot_data())>0){
-    my_data <- ggplot_data()
-  } else {
-    my_data <- SBA_state_plot[SBA_state_plot$State %in% "CA",]
+  # generate data in reactive
+  ggplot_data <- reactive({
+    state_click <- input$map_shape_click
+    SBA_state_plot[SBA_state_plot$State %in% state_click,]
+      })
+  
+  #Plot of number of loans at each loan range level for a selected state
+  output$stateLoanRangePlot <- renderPlot({
+    
+    if(nrow(ggplot_data())>0){
+      my_data <- ggplot_data()
+    } else {
+      my_data <- SBA_state_plot[SBA_state_plot$State %in% "CA",]
+    }
+    
+     ggplot(data=my_data,aes(x=LoanRange1))+
+      geom_bar(color="gray48", fill="cadetblue3")+
+      theme_bw()+
+      theme(axis.text.x=element_text(color = "black", size=10, angle=30, vjust=.8, hjust=0.8))+
+      xlab("Loan Range")+
+      ylab("Number of Loans")+
+      scale_x_discrete(breaks=c("e $150,000-350,000", 
+                                "d $350,000-1 million", 
+                                "c $1-2 million", 
+                                "b $2-5 million",
+                                "a $5-10 million"),
+                       labels=c("$150k-350k", 
+                                "$350k-1m", 
+                                "$1m-2m", 
+                                "$2m-5m",
+                                "$5m-10m"))+
+      scale_y_continuous(labels=scales::comma, limits=c(0,50000))+
+       geom_text(stat='count', aes(label=comma(..count..)), vjust=-.25)+
+       ggtitle(paste0("Number of Loans in Each Loan Range for ",unique(my_data$State)))
+     
+  })
+ 
+  
+  #Plot of number of jobs saved at each loan range level for selected state
+  output$stateJobsPlot <- renderPlot({
+    
+    if(nrow(ggplot_data())>0){
+      my_data <- ggplot_data()
+    } else {
+      my_data <- SBA_state_plot[SBA_state_plot$State %in% "CA",]
+    }
+    
+      ggplot(data=my_data, aes(x=LoanRange1, y=JobsRetained))+
+      geom_jitter(color="cadetblue3")+
+      theme_bw()+
+      theme(axis.text.x=element_text(color = "black", size=10, angle=30, vjust=1, hjust=1))+
+      xlab("Loan Range")+
+      ylab("Number of Jobs Retained")+
+      scale_x_discrete(breaks=c("e $150,000-350,000", 
+                                "d $350,000-1 million", 
+                                "c $1-2 million", 
+                                "b $2-5 million",
+                                "a $5-10 million"),
+                       labels=c("$150k-350k", 
+                                "$350k-1m", 
+                                "$1m-2m", 
+                                "$2m-5m",
+                                "$5m-10m"))+
+      scale_y_continuous(labels=scales::comma, limits=c(0,600))+
+        ggtitle(paste0("Number of Jobs Retained in Each Loan Range for ",unique(my_data$State)))
+  })
+  
+  #Plot of number of jobs saved in each industry for selected state
+  output$stateIndustriesPlot <- renderPlot({
+    
+    if(nrow(ggplot_data())>0){
+      my_data <- ggplot_data()
+    } else {
+      my_data <- SBA_state_plot[SBA_state_plot$State %in% "CA",]
+    }
+    
+    #Prepare data for use
+    my_data%>%select(State, IndustryName, JobsRetained)%>%
+      group_by(State, IndustryName)%>%
+      summarise(statejobsInd = sum(JobsRetained, na.rm=TRUE))%>%
+      group_by(State)%>%top_n(n=10)%>%
+      ggplot(aes(reorder(statejobsInd, x=IndustryName), y=statejobsInd))+
+      geom_col(color="gray48", fill="cadetblue3")+
+      theme_bw()+
+      theme(axis.text.x=element_text(color = "black", size=10, angle=30,vjust=1, hjust=1))+
+      xlab("Industries")+
+      ylab("Number of Jobs Retained")+
+      scale_y_continuous(labels=scales::comma, limits=c(0,600000))+
+      geom_text(aes(label=comma(statejobsInd)), vjust=-.25, angle=45, hjust=.25)+
+      ggtitle(paste0("Number of Jobs Retained for ", unique(my_data$State),
+                     "\nTen Industries with Largest No. of Jobs Retained" ))
+  })
+  
+ 
+  #Plot of number of loans for top ten lenders in state
+  output$stateLenderRangeplot <- renderPlot({
+    
+    if(nrow(ggplot_data())>0){
+      my_data <- ggplot_data()
+    } else {
+      my_data <- SBA_state_plot[SBA_state_plot$State %in% "CA",]
+    }
+    
+    #Prepare data for use
+    my_data%>%
+      inner_join(top_banks, by=c("State", "Lender"))%>%
+      select(State, Lender, LoanRange1)%>%  
+      group_by(Lender)%>%
+      mutate(tot_range_lender=n())%>%
+      ungroup()%>%
+      group_by(Lender, LoanRange1)%>%
+      ggplot(aes(x=reorder(Lender, -tot_range_lender)))+
+      geom_bar(aes(fill=LoanRange1))+
+      theme_bw()+
+      theme(axis.text.x=element_text(color = "black", size=10, angle=60, vjust=1, hjust=1))+
+      xlab("Lenders and Loan Ranges")+
+      ylab("Number of Loans by Loan Range")+
+      scale_y_continuous(labels=scales::comma, limits=c(0,8000))+
+      geom_text(stat='count', aes(label=comma(..count..)), vjust=-.25)+
+      ggtitle(paste0("Number of Loans - Ten Largest Lenders in ", unique(my_data$State)))+
+      scale_fill_manual(values=c("cadetblue2", 
+                                 "cadetblue1",
+                                 "cadetblue3",
+                                 "cadetblue4",
+                                 "gray48"),
+                        breaks=c("e $150,000-350,000",
+                                 "d $350,000-1 million",
+                                 "c $1-2 million",
+                                 "b $2-5 million",
+                                 "a $5-10 million"),
+                        labels=c("$150k-350k",
+                                 "$350k-1m",
+                                 "$1m-2m",
+                                 "$2m-5m",
+                                 "$5m-10m"),
+                        name="Loan Ranges")
+    
+  })
+  
+  #Show correlation between jobs retained and state population
+  output$corrJobsAll <- renderPlot({
+    SBA%>%
+      inner_join(pop, by='State') %>%
+      select(State, pop_est, JobsRetained) %>%
+      group_by(State, pop_est) %>%
+      summarise(jobs_state = sum(JobsRetained, na.rm = TRUE)) %>%
+      ggplot(aes(x = pop_est, y = jobs_state)) +
+      geom_point() +
+      scale_x_log10() +
+      scale_y_log10() +
+      geom_smooth(method = lm) +
+      labs(x = "State Population (log)", y= "No. of Jobs Retained (log)") +
+      geom_text(aes(label=State), check_overlap = TRUE, size=3, vjust=-1)+
+      theme_bw()+
+      ggtitle("Number of Jobs Retained and State Population - All Banks")
+    
+  })
+  
+  #Show correlation between jobs retained and county population
+  output$corrJobsNat <- renderPlot({
+    nat_banks%>%
+      inner_join(pop, by='State') %>%
+      select(State, pop_est, JobsRetained) %>%
+      group_by(State, pop_est) %>%
+      summarise(jobs_state = sum(JobsRetained, na.rm = TRUE)) %>%
+      ggplot(aes(x = pop_est, y = jobs_state)) +
+      geom_point() +
+      scale_x_log10() +
+      scale_y_log10() +
+      geom_smooth(method = lm) +
+      labs(x = "State Population (log)", y= "No. of Jobs Retained (log)") +
+      geom_text(aes(label=State), check_overlap = TRUE, size=3, vjust=-1)+
+      theme_bw()+
+      ggtitle("Number of Jobs Retained and State Population - OCC-Regulated Banks")
+  })
+  
+  
+  #click text
+  output$clickTextNat <- renderText({
+    "Please select an asset category to view data for OCC-regulated banks. Please note, only OCC-regulated banks that could be conclusively matched with SBA Lenders are included in this analysis."
+  })
+  
+  output$mapNatBank <- renderLeaflet({
+    leaflet() %>%
+      addTiles("CartoDB.Positron") %>%
+      setView(lng = -93.85, lat = 37.45, zoom = 4)%>% #Open map so it centers on US
+      addPolygons(data = states_merged_SBA_nat,
+                  fillColor = ~palnat(states_merged_SBA_nat$total),
+                  fillOpacity = 0.7,
+                  weight = 0.2,
+                  smoothFactor = 0.2,
+                  popup=~NAME,
+                  layerId = ~state
+      )%>%
+      addLegend(pal = palnat,
+                values = states_merged_SBA_nat$total,
+                position = "bottomright",
+                title = "No. of Loans<br />per 10,000<br/>residents<br />All OCC Banks")
+  })
+  
+  #generate data in reactive
+  ggplot_data_nat <- reactive({
+    state_click_nat <- input$mapNatBank_shape_click
+    SBA_state_plot_nat[SBA_state_plot_nat$State %in% state_click_nat,]
+  })
+  
+  #generate data in reactive
+  ggplot_data_nat1 <- reactive({
+    state_click_nat <- input$mapNatBank_shape_click
+    SBA_state_plot_nat_all[SBA_state_plot_nat_all$State %in% state_click_nat,]
+  })
+  
+  output$bankLoanRangePlot <- renderPlot({
+      #no selections
+      if ((input$assetCat=="" | input$assetCat=="All") & (nrow(ggplot_data_nat())==0)){ 
+      my_data_nat <- SBA_state_plot_nat_all2
+    } #asset selection & no state selected
+      else if ((input$assetCat!="" | input$assetCat!="All") & (nrow(ggplot_data_nat())==0)){ 
+      my_data_nat <- SBA_state_plot_nat_all1
+      #no asset selection & state selected
+    } else if ((input$assetCat=="" | input$assetCat=="All") & (nrow(ggplot_data_nat())!=0)){ 
+      my_data_nat <- ggplot_data_nat1()
+      #asset and state selected
+    } else if ((input$assetCat!="" | input$assetCat!="All") & (nrow(ggplot_data_nat())!=0)){
+      my_data_nat <- ggplot_data_nat() 
+    }
+
+    my_data_nat%>%
+      filter(asset_cat==!!input$assetCat)%>%
+      ggplot(aes(x=LoanRange1))+
+      geom_bar(color="gray48", fill="cadetblue3")+
+      theme_bw()+
+      theme(axis.text.x=element_text(color = "black", size=10, angle=30, vjust=.8, hjust=0.8))+
+      xlab("Loan Range")+
+      ylab("Number of Loans")+
+      scale_x_discrete(breaks=c("e $150,000-350,000",
+                                "d $350,000-1 million",
+                                "c $1-2 million",
+                                "b $2-5 million",
+                                "a $5-10 million"),
+                       labels=c("$150k-350k",
+                                "$350k-1m",
+                                "$1m-2m",
+                                "$2m-5m",
+                                "$5m-10m"))+
+      scale_y_continuous(labels=scales::comma, limits=c(0,40000))+
+      geom_text(stat='count', aes(label=comma(..count..)), vjust=-.25)+
+      ggtitle(paste0("Number of Loans in Each Loan Range for ",unique(my_data_nat$asset_cat), 
+                     " Asset Category in ", unique(my_data_nat$State)))
+  })
+  
+  
+  # output$bankJobsPlot <- renderPlot({
+  # 
+  # })
+  # 
+  # output$bankIndustriesPlot <- renderPlot({
+  # 
+  # })
+  # 
+  # output$bankLenderRangeplot <- renderPlot({
+  # 
+  # })
+  
+  #warning text
+  output$warningText <- renderText({
+    "Note: Of the 661,218 loans resported by SBA, 48,922 loans reported 0 jobs retained; an addition 40,506 observations did not report job-retention data. Additionally, some companies included in this database
+    have indicated the information reported by SBA is inaccurate or incomplete."
+  })
+  
+  #data source
+  output$dataSource <- renderText({
+    "The data used in these plots was downloaded from
+     https://home.treasury.gov/policy-issues/cares-act/assistance-for-small-businesses/sba-paycheck-protection-program-loan-level-data."
+  })
+  
+
+  # # output$SBA_df <- renderDataTable({
+  # #   SBA_orig
+  # # }, options = list(pageLength = 10))
+  # 
+  # thedata <- reactive(SBA_orig)
+  # 
+  # output$SBA_df <- renderDataTable({
+  #   SBA_orig
+  # }, options = list(pageLength = 10))
+  # 
+  # output$download <- downloadHandler(
+  #   filename = function(){"SBA.csv"}, 
+  #   content = function(fname){
+  #     write.csv(thedata(), fname)
+  #   }
+  # )
+  
   }
-  
-  ggplot(data=my_data,aes(x=LoanRange1))+
-    geom_bar(color="gray48", fill="cadetblue3")+
-    theme_bw()+
-    theme(axis.text.x=element_text(color = "black", size=10, angle=30, vjust=.8, hjust=0.8))+
-    xlab("Loan Range")+
-    ylab("Number of Loans")+
-    scale_x_discrete(breaks=c("e $150,000-350,000",
-                              "d $350,000-1 million",
-                              "c $1-2 million",
-                              "b $2-5 million",
-                              "a $5-10 million"),
-                     labels=c("$150,000-350,000",
-                              "$350,000-1 million",
-                              "$1-2 million",
-                              "$2-5 million",
-                              "$5-10 million"))+
-    scale_y_continuous(labels=scales::comma, limits=c(0,50000))+
-    ggtitle(paste0("Number of Loans in Each Loan Range for ",unique(my_data$State)))
-})
-
-#Plot of number of jobs saved at each loan range level for selected state
-output$stateJobsPlot <- renderPlot({
-  if(nrow(ggplot_data())>0){
-    my_data <- ggplot_data()
-  } else {
-    my_data <- SBA_state_plot[SBA_state_plot$State %in% "CA",]
-  }
-  ggplot(data=my_data, aes(x=LoanRange1, y=JobsRetained))+
-    geom_jitter(color="cadetblue3")+
-    theme_bw()+
-    theme(axis.text.x=element_text(color = "black", size=10, angle=30, vjust=.8, hjust=0.8))+
-    xlab("Loan Range")+
-    ylab("Number of Jobs Retained")+
-    scale_x_discrete(breaks=c("e $150,000-350,000",
-                              "d $350,000-1 million",
-                              "c $1-2 million",
-                              "b $2-5 million",
-                              "a $5-10 million"),
-                     labels=c("$150,000-350,000",
-                              "$350,000-1 million",
-                              "$1-2 million",
-                              "$2-5 million",
-                              "$5-10 million"))+
-    scale_y_continuous(labels=scales::comma, limits=c(0,600))+
-    ggtitle(paste0("Number of Jobs Retained in Each Loan Range for ",unique(my_data$State)))
-})
-
-#Plot of number of jobs saved in each industry for selected state
-output$stateIndustriesPlot <- renderPlot({
-  #Prepare data for use
-  if(nrow(ggplot_data())>0){
-    my_data <- ggplot_data()
-  } else {
-    my_data <- SBA_state_plot[SBA_state_plot$State %in% "CA",]
-  }
-  my_data%>%select(State, IndustryName, JobsRetained)%>%
-    group_by(State, IndustryName)%>%
-    summarise(statejobsInd = sum(JobsRetained, na.rm=TRUE))%>%
-    group_by(State)%>%top_n(n=10)%>%
-    ggplot(aes(reorder(statejobsInd, x=IndustryName), y=statejobsInd))+
-    geom_col(color="gray48", fill="cadetblue3")+
-    theme_bw()+
-    theme(axis.text.x=element_text(color = "black", size=10, angle=30, vjust=.8, hjust=0.8))+
-    xlab("Industries")+
-    ylab("Number of Jobs Retained")+
-    scale_y_continuous(labels=scales::comma, limits=c(0,600000)) +
-    ggtitle(paste0("Number of Jobs Retained for ", unique(my_data$State),
-                   "\nTen Industries with Largest No. of Jobs Retained" ))
-})
-output$SBA_df <- renderDataTable({
-  SBA_orig
-}, options = list(pageLength = 10))
-
-
-#########################
-# State vs Jobs Retained
-#########################
-#SBA_samp <- SBA %>% sample_frac(0.1)
-
-# Plot
-output$stateplot <- renderPlot({
-  SBA %>%
-    sample_frac(0.1) %>%
-    mutate_at(vars(Zip), funs(factor)) %>%
-    filter(State == input$stateInput) -> st
-  
-  head(st)
-  
-  ggplot(st, aes(x = Zip, y = JobsRetained)) +
-    geom_boxplot() +
-    theme_classic() + 
-    theme(axis.text.x=element_blank(),axis.ticks.x=element_blank())
-})
-
-# Model output
-output$STsummary <- renderPrint({
-  SBA %>%
-    sample_frac(0.1) %>%
-    mutate(LoanRange = recode(LoanRange, 
-                              "a $5-10 million" = 5, 
-                              "b $2-5 million" = 4,
-                              "c $1-2 million" = 3,
-                              "d $350,000-1 million" = 2,
-                              "e $150,000-350,000" = 1)) %>%
-    filter(State == input$stateInput) -> stmod
-  
-  st_df_lm <- lm(JobsRetained ~ Zip, data = stmod) # Fit model
-  #summary(lr_df_lm)
-  broom::tidy(st_df_lm)[c(1,2,5)]
-  # {map(.$mod, summary)}
-})
-##############################
-# Loan Range vs Jobs Retained
-##############################
-# Plot
-output$loanplot <- renderPlot({
-  SBA %>%
-    sample_frac(0.1) %>%
-    inner_join(pop, by='State') %>%
-    select(State, pop_est, JobsRetained) %>%
-    group_by(State) %>%
-    summarise(pop_est_mn = mean(pop_est), jobs_mn = mean(JobsRetained, na.rm = TRUE)) %>%
-    ggplot(aes(x = pop_est_mn, y = jobs_mn)) +
-    geom_point() +
-    scale_x_log10() +
-    scale_y_log10() +
-    geom_smooth(method = lm) +
-    labs(x = "Population (avg per state)", y= "Jobs Retained (n)") +
-    theme_classic()
-})
-# Model Output
-output$Loansummary <- renderPrint({
-
-  SBA %>%
-    sample_frac(0.1) %>%
-    mutate(LoanRange = recode(LoanRange, 
-                              "a $5-10 million" = 1, 
-                              "b $2-5 million" = 2,
-                              "c $1-2 million" = 3,
-                              "d $350,000-1 million" = 4,
-                              "e $150,000-350,000" = 5)) %>%
-    mutate(vars(State), funs(factor)) %>%
-    mutate_if(is.factor, as.numeric)-> stmod
-  
-  lr_df_lm <- lm(JobsRetained ~ LoanRange + State, data = stmod) 
-  
-  jr <- predict(lr_df_lm, newdata = data.frame(LoanRange = as.numeric(input$LR), State = input$stateInput))
-  jr
-  
-})
-
-}
 shinyApp(ui, server)
