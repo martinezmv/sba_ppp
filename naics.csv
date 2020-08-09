@@ -1,0 +1,25 @@
+Sector,IndustryName
+11,Agriculture
+21,Mining
+22,Utilities
+23,Construction
+31,Manufacturing
+32,Manufacturing
+33,Manufacturing
+42,Wholesale Trade
+44,Retail Trade
+45,Retail Trade
+48,Transportation
+49,Transportation
+51,Information
+52,Finance/Ins.
+53,Real Estate/Rental
+54,Prof./Scientific
+55,Management
+56,Administrative
+61,Educational
+62,Health Care
+71,Entertainment
+72,Hospitality/Food
+81,Other Services
+92,Public Admin.
