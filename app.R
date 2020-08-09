@@ -24,6 +24,7 @@ naics <- read_csv("./data/naics.csv")
 
 nat_banks_list <- read_csv("./data/nat_banks_final.csv")
 nat_banks_list%>%select(-findrsLender, -cert)->nat_banks
+nat_banks%>%mutate(Lender=str_replace(Lender, "\\bNational Association\\b", "NA"))->nat_banks
 nat_banks%>%inner_join(SBA, by="Lender")->nat_banks
 
 #bring in census population data estimates by state for 2019
@@ -47,6 +48,22 @@ SBA %>%group_by(State, Lender) %>%
   group_by(State)%>%
   top_n(n=10)->top_banks
 
+#prepare for plot of top lenders in each state - nat banks
+nat_banks%>%group_by(State, Lender) %>%
+  summarize(n = n()) %>%
+  arrange(desc(n)) %>%
+  group_by(State)%>%
+  top_n(n=10)->top_banks_nat
+
+#prepare for plot of top lenders in all state - nat banks
+nat_banks%>%mutate(State="National")%>%
+  group_by(State, Lender) %>%
+  summarize(n = n()) %>%
+  arrange(desc(n)) %>%
+  group_by(State)%>%
+  top_n(n=10)->top_banks_nat_all
+
+top_banks_nat%>%mutate(State="National")->top_banks_nat_nat
 
 #prepare for use in state plot
 SBA%>%mutate(LoanRange1=factor(LoanRange, levels=c("e $150,000-350,000", 
@@ -57,7 +74,8 @@ SBA%>%mutate(LoanRange1=factor(LoanRange, levels=c("e $150,000-350,000",
 
 #Prepare map plot data for nat banks
 #asset cat and state selected
-nat_banks_list%>%inner_join(SBA_state_plot, by="Lender")->SBA_state_plot_nat 
+nat_banks_list%>%mutate(Lender=str_replace(Lender, "\\bNational Association\\b", "NA"))%>%
+  inner_join(SBA_state_plot, by="Lender")->SBA_state_plot_nat 
 #state selected and no asset selected
 SBA_state_plot_nat%>%mutate(asset_cat="All")->SBA_state_plot_nat_all 
 #no state selected and asset selected
@@ -105,9 +123,9 @@ ui <- fluidPage(theme = shinytheme("sandstone"),
                            fluidRow(column(12,
                                            leafletOutput("map"))),
                            br(),
-                           fluidRow(column(4, plotOutput("stateLoanRangePlot")),
-                                    column(4, plotOutput("stateJobsPlot")),
-                                    column(4, plotOutput("stateIndustriesPlot"))),
+                           fluidRow(column(5, offset=1, plotOutput("stateLoanRangePlot")),
+                                    column(5, plotOutput("stateJobsPlot"))),
+                           fluidRow(column(10, offset=1, plotOutput("stateIndustriesPlot"))),
                            
                            br(),
                            fluidRow(column(10, offset=1, plotOutput("stateLenderRangeplot"))),
@@ -125,12 +143,12 @@ ui <- fluidPage(theme = shinytheme("sandstone"),
                         br(),
                         selectInput("assetCat", "Choose OCC-regulated bank asset size category", 
                                     choices=c("All", "Less than $1bn", "$1bn - 2.49bn","$2.5bn - 9.9bn",
-                                               "$10bn - 99.9bn","$100bn and above")),
+                                               "$10bn - 99.9bn","$100bn and above"), width='25%'),
                          fluidRow(column(12,leafletOutput("mapNatBank"))),
                          br(),
-                         fluidRow(column(4, plotOutput("bankLoanRangePlot")),
-                                  column(4, plotOutput("bankJobsPlot")),
-                                  column(4, plotOutput("bankIndustriesPlot"))),
+                         fluidRow(column(5, offset=1, plotOutput("bankLoanRangePlot")),
+                                  column(5, plotOutput("bankJobsPlot"))),
+                          fluidRow(column(10, offset=1, plotOutput("bankIndustriesPlot"))),
                           br(),
                           fluidRow(column(10, offset=1, plotOutput("bankLenderRangeplot"))),
                           br(),
@@ -262,7 +280,7 @@ server <- function(input, output, session) {
       xlab("Industries")+
       ylab("Number of Jobs Retained")+
       scale_y_continuous(labels=scales::comma, limits=c(0,600000))+
-      geom_text(aes(label=comma(statejobsInd)), vjust=-.25, angle=45, hjust=.25)+
+      geom_text(aes(label=comma(statejobsInd)), vjust=-.25, hjust=.25)+
       ggtitle(paste0("Number of Jobs Retained for ", unique(my_data$State),
                      "\nTen Industries with Largest No. of Jobs Retained" ))
   })
@@ -353,7 +371,7 @@ server <- function(input, output, session) {
   
   #click text
   output$clickTextNat <- renderText({
-    "Please select an asset category to view data for OCC-regulated banks. Please note, only OCC-regulated banks that could be conclusively matched with SBA Lenders are included in this analysis."
+    "Please select an asset category and/or a state to view data for OCC-regulated banks. Please note, only OCC-regulated banks that could be conclusively matched with SBA Lenders are included in this analysis."
   })
   
   output$mapNatBank <- renderLeaflet({
@@ -419,9 +437,9 @@ server <- function(input, output, session) {
                                 "$1m-2m",
                                 "$2m-5m",
                                 "$5m-10m"))+
-      scale_y_continuous(labels=scales::comma, limits=c(0,40000))+
+      #scale_y_continuous(labels=scales::comma, limits=c(0,150000))+
       geom_text(stat='count', aes(label=comma(..count..)), vjust=-.25)+
-      ggtitle(paste0("Number of Loans by Loan Range in ",unique(my_data_nat$State)))
+      ggtitle(paste0("Number of Loans in Each Loan Range for ",unique(my_data_nat$State)))
   })
   
    #Plot of number of jobs saved at each loan range level for selected state
@@ -458,8 +476,8 @@ server <- function(input, output, session) {
                                   "$1m-2m", 
                                   "$2m-5m",
                                   "$5m-10m"))+
-        scale_y_continuous(labels=scales::comma, limits=c(0,600))+
-      ggtitle(paste0("Number of Jobs Retained by Loan Range in ",unique(my_data_nat$State)))
+        #scale_y_continuous(labels=scales::comma, limits=c(0,600))+
+      ggtitle(paste0("Number of Jobs Retained in Each Loan Range for ",unique(my_data_nat$State)))
     })
   
 
@@ -490,43 +508,64 @@ server <- function(input, output, session) {
       theme(axis.text.x=element_text(color = "black", size=10, angle=30,vjust=1, hjust=1))+
       xlab("Industries")+
       ylab("Number of Jobs Retained")+
-      scale_y_continuous(labels=scales::comma, limits=c(0,600000))+
-      geom_text(aes(label=comma(statejobsInd)), vjust=-.25, angle=45, hjust=.25)+
-      ggtitle(paste0("Number of Jobs Retained by Loan Range Ten Industries", 
-                     "\n with Largest No. of Jobs Retained in: ",unique(my_data_nat$State)))
+      #scale_y_continuous(labels=scales::comma, limits=c(0,1500000))+
+      geom_text(aes(label=comma(statejobsInd)), vjust=-.25, hjust=.25)+
+      ggtitle(paste0("Number of Jobs Retained for ", unique(my_data_nat$State),
+                     "\nTen Industries with Largest No. of Jobs Retained" ))
   })
   
 
   output$bankLenderRangeplot <- renderPlot({
+    #no asset and no state selected
     if ((input$assetCat=="" | input$assetCat=="All") & (nrow(ggplot_data_nat())==0)){ 
-      my_data_nat <- SBA_state_plot_nat_all2
+      my_data_nat <- SBA_state_plot_nat_all2%>%
+        inner_join(top_banks_nat_all, by=c("State", "Lender"))%>%
+        select(State, Lender, LoanRange1)%>%  
+        group_by(Lender)%>%
+        mutate(tot_range_lender=n())%>%
+        ungroup()%>%
+        group_by(Lender, LoanRange1)
     } #asset selection & no state selected
     else if ((input$assetCat!="" | input$assetCat!="All") & (nrow(ggplot_data_nat())==0)){ 
-      my_data_nat <- SBA_state_plot_nat_all1
+      my_data_nat <- SBA_state_plot_nat_all1%>%
+        filter(asset_cat==!!input$assetCat)%>%
+        group_by(State, Lender)%>%
+        summarize(tot_range_lender=n())%>% 
+        top_n(n=10)%>%
+        inner_join(SBA_state_plot_nat_all1, by=c("State","Lender"))%>%
+        select(State, Lender, LoanRange1, tot_range_lender)%>% 
+        group_by(Lender, LoanRange1)
       #no asset selection & state selected
     } else if ((input$assetCat=="" | input$assetCat=="All") & (nrow(ggplot_data_nat())!=0)){ 
-      my_data_nat <- ggplot_data_nat1()
+      my_data_nat <- ggplot_data_nat1() %>%
+        inner_join(top_banks_nat, by=c("State", "Lender"))%>%
+        select(State, Lender, LoanRange1, asset_cat)%>%  
+        group_by(Lender)%>%
+        mutate(tot_range_lender=n())%>%
+        ungroup()%>%
+        group_by(State, Lender)%>%
+        top_n(n=10)
       #asset and state selected
     } else if ((input$assetCat!="" | input$assetCat!="All") & (nrow(ggplot_data_nat())!=0)){
-      my_data_nat <- ggplot_data_nat() 
+      my_data_nat <- ggplot_data_nat() %>% 
+        filter(asset_cat==!!input$assetCat)%>% 
+        select(State, Lender, LoanRange1, asset_cat)%>%  
+        group_by(State, Lender)%>%
+        summarize(tot_range_lender=n())%>%
+        top_n(n=10)%>%
+        inner_join(SBA_state_plot_nat, by=c("State", "Lender"))%>%
+        select(State, Lender, LoanRange1, tot_range_lender)%>%  
+        group_by(Lender, LoanRange1)
     }
     
-    #Prepare data for use
     my_data_nat%>%
-      filter(asset_cat==!!input$assetCat)%>%
-      inner_join(top_banks, by=c("State", "Lender"))%>%
-      select(State, Lender, LoanRange1)%>%  
-      group_by(Lender)%>%
-      mutate(tot_range_lender=n())%>%
-      ungroup()%>%
-      group_by(Lender, LoanRange1)%>%
       ggplot(aes(x=reorder(Lender, -tot_range_lender)))+
       geom_bar(aes(fill=LoanRange1))+
       theme_bw()+
       theme(axis.text.x=element_text(color = "black", size=10, angle=60, vjust=1, hjust=1))+
       xlab("Lenders and Loan Ranges")+
       ylab("Number of Loans by Loan Range")+
-      scale_y_continuous(labels=scales::comma, limits=c(0,8000))+
+      #scale_y_continuous(labels=scales::comma, limits=c(0,37000))+
       geom_text(stat='count', aes(label=comma(..count..)), vjust=-.25)+
       ggtitle(paste0("Number of Loans - Ten Largest Lenders in ", unique(my_data_nat$State)))+
       scale_fill_manual(values=c("cadetblue2", 
@@ -563,7 +602,7 @@ server <- function(input, output, session) {
   
   #warning text nat
   output$warningTextNat <- renderText({
-    "Note: Of the 243,512 loans made by national banks that could be conclusively matched and reported by SBA, 14,252 
+    "Note: Of the 208,690 loans made by national banks that could be conclusively matched and reported by SBA, 14,252 
     loans reported 0 jobs retained; an addition 24,632 observations did not report job-retention data."
   })
   
