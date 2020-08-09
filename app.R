@@ -141,9 +141,9 @@ ui <- fluidPage(theme = shinytheme("sandstone"),
                         br(),
                         fluidRow(column(12, textOutput("clickTextNat"))),
                         br(),
-                        selectInput("assetCat", "Choose OCC-regulated bank asset size category", 
+                        fluidRow(column(width=8,offset=1, selectInput("assetCat", "Choose OCC-regulated bank asset size category", 
                                     choices=c("All", "Less than $1bn", "$1bn - 2.49bn","$2.5bn - 9.9bn",
-                                               "$10bn - 99.9bn","$100bn and above"), width='25%'),
+                                               "$10bn - 99.9bn","$100bn and above"), width='25%'))),
                          fluidRow(column(12,leafletOutput("mapNatBank"))),
                          br(),
                          fluidRow(column(5, offset=1, plotOutput("bankLoanRangePlot")),
@@ -371,7 +371,7 @@ server <- function(input, output, session) {
   
   #click text
   output$clickTextNat <- renderText({
-    "Please select an asset category and/or a state to view data for OCC-regulated banks. Please note, only OCC-regulated banks that could be conclusively matched with SBA Lenders are included in this analysis."
+    "Please select an asset category and/or a state to view data for OCC-regulated banks. Please note, only 634 OCC-regulated banks that could be conclusively matched with SBA Lenders are included in the OCC-Regulated Banks analysis."
   })
   
   output$mapNatBank <- renderLeaflet({
@@ -602,7 +602,7 @@ server <- function(input, output, session) {
   
   #warning text nat
   output$warningTextNat <- renderText({
-    "Note: Of the 208,690 loans made by national banks that could be conclusively matched and reported by SBA, 14,252 
+    "Note: Of the 208,690 SBA PPP loans made by national banks that could be conclusively matched, 14,252 
     loans reported 0 jobs retained; an addition 24,632 observations did not report job-retention data."
   })
   
